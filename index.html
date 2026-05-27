@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -248,7 +249,7 @@
                 case States.DETECTED:
                     light.classList.add('light-detected'); txt.classList.add('text-detected');
                     txt.innerText = "Đang quét...";
-                    info.innerText = "Hệ thống đã khóa. Giữ nguyên hướng nhìn trong 5 giây...";
+                    info.innerText = "Giữ nguyên hướng nhìn trong 5 giây...";
                     
                     const elapsed = currentTime - stateTransitionTime;
                     const remaining = Math.max(0, (ENGAGE_DELAY - elapsed) / 1000);
@@ -258,7 +259,7 @@
                 case States.ENGAGED:
                     light.classList.add('light-engaged'); txt.classList.add('text-engaged');
                     txt.innerText = "THUA CUỘC";
-                    info.innerText = "KỊCH ĐIỂM: Gương vỡ nứt vụn sắc nhọn đan lưới bạc đúng ảnh mẫu!";
+                    info.innerText = "Tấm gương vỡ vụn!";
                     timerDisplay.style.display = "none";
                     break;
             }
@@ -345,4 +346,4 @@
         window.onload = main;
     </script>
 </body>
-</html>Thêm âm thanh nứt gương khi hiệu ứng đồ họa nứt gương xuất hiện
+</html>
