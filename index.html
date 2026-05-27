@@ -1,0 +1,348 @@
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hệ Thống Gương Tương Tác - Hiệu Ứng Kính Vỡ 5s</title>
+    <style>
+        :root {
+            --bg-color: #030307;
+            --neon-idling: #444;
+            --neon-detected: #ffaa00;
+            --neon-engaged: #ff2222;
+        }
+
+        body, html {
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
+            overflow: hidden;
+            background-color: var(--bg-color);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        #app-container { position: relative; width: 100vw; height: 100vh; }
+
+        #control-panel {
+            position: absolute; top: 20px; left: 20px; z-index: 100;
+            background: rgba(10, 10, 15, 0.85);
+            backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 20px; border-radius: 12px;
+            color: #fff; width: 280px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            pointer-events: none;
+        }
+
+        .panel-title { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: rgba(255, 255, 255, 0.4); margin: 0 0 10px 0; }
+        .status-container { display: flex; align-items: center; margin-bottom: 12px; }
+        .status-light { width: 12px; height: 12px; border-radius: 50%; margin-right: 12px; transition: all 0.3s ease; }
+        #status-text { font-size: 16px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
+        #info-text { font-size: 13px; color: rgba(255, 255, 255, 0.6); line-height: 1.4; margin: 0; min-height: 36px; }
+        
+        #countdown-timer {
+            font-size: 24px;
+            font-weight: 900;
+            color: var(--neon-detected);
+            margin-top: 10px;
+            display: none;
+            letter-spacing: 1px;
+        }
+
+        #webcam { position: absolute; width: 1px; height: 1px; opacity: 0; }
+        .light-idling { background-color: var(--neon-idling); box-shadow: 0 0 10px var(--neon-idling); }
+        .light-detected { background-color: var(--neon-detected); box-shadow: 0 0 10px var(--neon-detected); }
+        .light-engaged { background-color: var(--neon-engaged); box-shadow: 0 0 10px var(--neon-engaged); }
+        .text-idling { color: var(--neon-idling); }
+        .text-detected { color: var(--neon-detected); }
+        .text-engaged { color: var(--neon-engaged); }
+    </style>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="app-container">
+        <div id="three-container"></div>
+        <div id="control-panel">
+            <p class="panel-title">Gương Tương Tác Kỹ Thuật Số</p>
+            <div class="status-container">
+                <div id="status-light" class="status-light light-idling"></div>
+                <div id="status-text" class="text-idling">Khởi tạo...</div>
+            </div>
+            <p id="info-text">Đang kết nối luồng gương...</p>
+            <div id="countdown-timer">T-MINUS: 5.00s</div>
+        </div>
+        <video id="webcam" autoplay playsinline loop muted></video>
+    </div>
+
+    <script>
+        const States = { IDLING: 'IDLING', DETECTED: 'DETECTED', ENGAGED: 'ENGAGED' };
+        let currentState = States.IDLING;
+        let lastFaceDetectedTime = 0;
+        let stateTransitionTime = 0;
+        
+        const LOSS_THRESHOLD = 1500; 
+        const ENGAGE_DELAY = 5000; 
+
+        let scene, camera, renderer, videoTexture, sharedMaterial;
+        let mirrorPieces = []; 
+        let faceCenter = { x: 0, y: 0 };
+        let explosionProgress = 0;
+        const videoElement = document.getElementById('webcam');
+
+        const MIRROR_WIDTH = 30;
+        const MIRROR_HEIGHT = 18;
+
+        async function initWebcam() {
+            try {
+                const constraints = { video: { width: 1280, height: 720 }, audio: false };
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                videoElement.srcObject = stream;
+                return new Promise((resolve) => {
+                    videoElement.onloadedmetadata = () => {
+                        videoElement.play();
+                        resolve(true);
+                    };
+                });
+            } catch (err) {
+                console.error("Lỗi Camera:", err);
+                document.getElementById('info-text').innerHTML = "<span style='color:#ff2222'>BẮT BUỘC: Bạn phải mở bằng Live Server để cấp quyền camera!</span>";
+                return false;
+            }
+        }
+
+        function createSharpFractureGeometry(x0, y0, index, total) {
+            const geometry = new THREE.BufferGeometry();
+            const angle = (index / total) * Math.PI * 2;
+            const nextAngle = ((index + 1) / total) * Math.PI * 2;
+            const r2 = 40.0; 
+
+            const vertices = new Float32Array([
+                x0, y0, 0,
+                x0 + Math.cos(angle) * r2, y0 + Math.sin(angle) * r2, 0,
+                x0 + Math.cos(nextAngle) * r2, y0 + Math.sin(nextAngle) * r2, 0
+            ]);
+
+            const uvs = new Float32Array([
+                (x0 / MIRROR_WIDTH) + 0.5, (y0 / MIRROR_HEIGHT) + 0.5,
+                ((x0 + Math.cos(angle) * r2) / MIRROR_WIDTH) + 0.5, ((y0 + Math.sin(angle) * r2) / MIRROR_HEIGHT) + 0.5,
+                ((x0 + Math.cos(nextAngle) * r2) / MIRROR_WIDTH) + 0.5, ((y0 + Math.sin(nextAngle) * r2) / MIRROR_HEIGHT) + 0.5
+            ]);
+
+            for(let i = 0; i < uvs.length; i += 2) {
+                uvs[i] = 1.0 - uvs[i];
+            }
+
+            geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+            geometry.computeVertexNormals();
+
+            return geometry;
+        }
+
+        function init_threejs() {
+            const container = document.getElementById('three-container');
+            scene = new THREE.Scene();
+            
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.z = 12;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            container.appendChild(renderer.domElement);
+
+            videoTexture = new THREE.VideoTexture(videoElement);
+            videoTexture.colorSpace = THREE.SRGBColorSpace;
+            videoTexture.minFilter = THREE.LinearFilter;
+
+            sharedMaterial = new THREE.MeshBasicMaterial({
+                map: videoTexture,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 1.0
+            });
+
+            const centers = [
+                {x: -5, y: 3}, {x: 6, y: -4}, {x: 0, y: 0}
+            ];
+
+            const piecesPerCenter = 120;
+
+            centers.forEach(center => {
+                for (let i = 0; i < piecesPerCenter; i++) {
+                    const geometry = createSharpFractureGeometry(center.x, center.y, i, piecesPerCenter);
+                    const mesh = new THREE.Mesh(geometry, sharedMaterial);
+                    scene.add(mesh);
+
+                    const midAngle = ((i + 0.5) / piecesPerCenter) * Math.PI * 2;
+                    mirrorPieces.push({
+                        mesh: mesh,
+                        centerX: center.x,
+                        centerY: center.y,
+                        velocityX: Math.cos(midAngle) * (Math.random() * 1.5 + 1.0),
+                        velocityY: Math.sin(midAngle) * (Math.random() * 1.5 + 1.0) - 0.5, 
+                        velocityZ: (Math.random() - 0.2) * 2.0,
+                        rotX: (Math.random() - 0.5) * 4.0,
+                        rotY: (Math.random() - 0.5) * 4.0,
+                        rotZ: (Math.random() - 0.5) * 2.0
+                    });
+                }
+            });
+
+            onWindowResize();
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            
+            const aspect = window.innerWidth / window.innerHeight;
+            if (aspect > (MIRROR_WIDTH / MIRROR_HEIGHT)) {
+                camera.fov = 45;
+            } else {
+                camera.fov = 45 * ((MIRROR_WIDTH / MIRROR_HEIGHT) / aspect);
+            }
+            camera.updateProjectionMatrix();
+        }
+
+        function update_state_machine(faceDetected) {
+            const currentTime = performance.now();
+            if (faceDetected) {
+                lastFaceDetectedTime = currentTime;
+                if (currentState === States.IDLING) {
+                    currentState = States.DETECTED;
+                    stateTransitionTime = currentTime;
+                } else if (currentState === States.DETECTED) {
+                    if (currentTime - stateTransitionTime > ENGAGE_DELAY) { 
+                        currentState = States.ENGAGED; 
+                    }
+                }
+            } else {
+                if (currentTime - lastFaceDetectedTime > LOSS_THRESHOLD) { 
+                    currentState = States.IDLING; 
+                }
+            }
+            update_ui(currentTime);
+        }
+
+        function update_ui(currentTime) {
+            const light = document.getElementById('status-light');
+            const txt = document.getElementById('status-text');
+            const info = document.getElementById('info-text');
+            const timerDisplay = document.getElementById('countdown-timer');
+
+            light.className = "status-light"; txt.className = "";
+
+            switch (currentState) {
+                case States.IDLING:
+                    light.classList.add('light-idling'); txt.classList.add('text-idling');
+                    txt.innerText = "Chờ đợi...";
+                    info.innerText = "Hãy nhìn thẳng vào tâm gương để khởi tạo cốt truyện.";
+                    timerDisplay.style.display = "none";
+                    break;
+                case States.DETECTED:
+                    light.classList.add('light-detected'); txt.classList.add('text-detected');
+                    txt.innerText = "Đang quét...";
+                    info.innerText = "Hệ thống đã khóa. Giữ nguyên hướng nhìn trong 5 giây...";
+                    
+                    const elapsed = currentTime - stateTransitionTime;
+                    const remaining = Math.max(0, (ENGAGE_DELAY - elapsed) / 1000);
+                    timerDisplay.style.display = "block";
+                    timerDisplay.innerText = `T-MINUS: ${remaining.toFixed(2)}s`;
+                    break;
+                case States.ENGAGED:
+                    light.classList.add('light-engaged'); txt.classList.add('text-engaged');
+                    txt.innerText = "THUA CUỘC";
+                    info.innerText = "KỊCH ĐIỂM: Gương vỡ nứt vụn sắc nhọn đan lưới bạc đúng ảnh mẫu!";
+                    timerDisplay.style.display = "none";
+                    break;
+            }
+        }
+
+        function detect_face() {
+            const faceMesh = new FaceMesh({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+            });
+
+            faceMesh.setOptions({
+                maxNumFaces: 1, refineLandmarks: false,
+                minDetectionConfidence: 0.5, minTrackingConfidence: 0.5
+            });
+
+            faceMesh.onResults((results) => {
+                let faceDetected = false;
+                if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                    faceDetected = true;
+                    const nose = results.multiFaceLandmarks[0][1];
+                    faceCenter.x = (nose.x - 0.5) * -MIRROR_WIDTH;
+                    faceCenter.y = (0.5 - nose.y) * MIRROR_HEIGHT;
+                }
+                update_state_machine(faceDetected);
+            });
+
+            const cameraUtils = new Camera(videoElement, {
+                onFrame: async () => { await faceMesh.send({ image: videoElement }); },
+                width: 640, height: 480
+            });
+            cameraUtils.start().catch(() => {
+                currentState = States.ENGAGED; update_ui(performance.now());
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = performance.now();
+
+            // FIX CỐT LÕI: Khi kính vỡ, ngắt cập nhật texture liên tục để đóng băng ma trận UV hình ảnh,
+            // ép các mảnh vỡ mang theo pixel ảnh cũ di chuyển, tạo ra đường rách nứt chân thực tuyệt đối.
+            if (currentState !== States.ENGAGED) {
+                videoTexture.needsUpdate = true;
+            }
+
+            mirrorPieces.forEach(p => {
+                if (currentState === States.IDLING) {
+                    p.mesh.position.set(0, 0, 0);
+                    p.mesh.rotation.set(0, 0, 0);
+                    explosionProgress = 0;
+                } 
+                else if (currentState === States.DETECTED) {
+                    const shake = Math.sin(time * 0.1 + p.centerX * 5.0) * 0.012;
+                    p.mesh.position.set(shake, shake, 0);
+                } 
+                else if (currentState === States.ENGAGED) {
+                    if (explosionProgress < 1.0) explosionProgress += 0.03;
+                    
+                    const distToFace = Math.sqrt(Math.pow(p.centerX - faceCenter.x, 2) + Math.pow(p.centerY - faceCenter.y, 2));
+                    const crackSpread = Math.min(1.0, explosionProgress * (4.0 / (distToFace + 0.1)));
+
+                    // Tách nhẹ các mảnh ra xa nhau một khoảng nhỏ để lộ khe nứt gãy sắc bén toàn màn hình
+                    p.mesh.position.x = p.velocityX * crackSpread * 0.12;
+                    p.mesh.position.y = p.velocityY * crackSpread * 0.12;
+                    p.mesh.position.z = p.velocityZ * crackSpread * 0.05;
+
+                    p.mesh.rotation.x = p.rotX * crackSpread * 0.02;
+                    p.mesh.rotation.y = p.rotY * crackSpread * 0.02;
+                    p.mesh.rotation.z = p.rotZ * crackSpread * 0.01;
+                }
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        async function main() {
+            const hasWebcam = await initWebcam();
+            if (hasWebcam) {
+                init_threejs();
+                detect_face();
+                animate();
+            }
+        }
+        window.onload = main;
+    </script>
+</body>
+</html>Thêm âm thanh nứt gương khi hiệu ứng đồ họa nứt gương xuất hiện
